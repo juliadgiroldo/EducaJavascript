@@ -1,9 +1,3 @@
-Um bom **README** é essencial para que outros desenvolvedores (ou os seus avaliadores do trabalho) consigam rodar o seu projeto sem dificuldades.
-
-Aqui está uma estrutura completa e profissional para o seu repositório no GitHub:
-
----
-
 # 🚀 Educa JavaScript API
 
 O **Educa JavaScript** é um agente conversacional pedagógico desenvolvido para auxiliar no ensino da linguagem JavaScript. A solução integra um sistema de moderação de conteúdo, módulos de explicação teórica com exemplos práticos e avaliações via Quiz e Questionário.
