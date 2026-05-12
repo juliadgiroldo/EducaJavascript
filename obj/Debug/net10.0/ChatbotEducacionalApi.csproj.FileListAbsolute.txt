@@ -31,3 +31,4 @@ C:\Users\Precision M6700\Desktop\trabalhoia\ChatbotEducacionalApi\obj\Debug\net1
 C:\Users\Precision M6700\Desktop\trabalhoia\ChatbotEducacionalApi\obj\Debug\net10.0\ChatbotEducacionalApi.pdb
 C:\Users\Precision M6700\Desktop\trabalhoia\ChatbotEducacionalApi\obj\Debug\net10.0\ChatbotEducacionalApi.genruntimeconfig.cache
 C:\Users\Precision M6700\Desktop\trabalhoia\ChatbotEducacionalApi\obj\Debug\net10.0\ref\ChatbotEducacionalApi.dll
+C:\Users\Precision M6700\Desktop\trabalhoia\ChatbotEducacionalApi\obj\Debug\net10.0\ChatbotEducacionalApi.sourcelink.json

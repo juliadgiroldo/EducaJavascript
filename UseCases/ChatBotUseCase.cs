@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 
 namespace ChatbotEducacionalApi.UseCases
@@ -8,8 +11,14 @@ namespace ChatbotEducacionalApi.UseCases
 
         private static readonly string[] Blacklist = { "merda", "lixo", "foder", "fuder", "caralho", "bosta", "inutil", "pqp", "cocô", "puta que pariu", "porra", "prr", "crlh", "burro", "imbecil" };
 
-        // ================== PERGUNTAS ==================
+        private const string TextoMenu = 
+            "Escolha uma das opções abaixo para continuarmos:\n\n" +
+            "0 - Finalizar a conversa\n" +
+            "1 – Conteúdo explicativo sobre JavaScript\n" +
+            "2 – Resolução de exercícios\n" +
+            "3 – Questionário para praticar";
 
+        // ================== PERGUNTAS ==================
         private static readonly List<PerguntaQuiz> ListaQuiz = new()
         {
             new PerguntaQuiz { Id = 1, Texto = "Como mostrar uma mensagem no terminal?", Opcoes = "1 - echo\n2 - console.log\n3 - print", Correta = "2", Feedback = "O console.log é a função nativa do JS." },
@@ -44,48 +53,90 @@ namespace ChatbotEducacionalApi.UseCases
         {
             var queryResult = payload.GetProperty("queryResult");
             var session = payload.GetProperty("session").GetString() ?? "";
-            string textoUsuario = queryResult.GetProperty("queryText").GetString()?.Trim().ToLower() ?? "";
-            var intentName = queryResult.GetProperty("intent").GetProperty("displayName").GetString();
+            
+            string textoUsuario = queryResult.TryGetProperty("queryText", out JsonElement qt) ? qt.GetString()?.Trim().ToLower() ?? "" : "";
+            string intentName = "";
+            
+            if (queryResult.TryGetProperty("intent", out JsonElement intentObj) && intentObj.TryGetProperty("displayName", out JsonElement dispNameObj))
+                intentName = dispNameObj.GetString() ?? "";
 
-            if (!_bancoModeracao.ContainsKey(session))
-                _bancoModeracao[session] = new StatusModeracao();
-
+            // --- Moderação ---
+            if (!_bancoModeracao.ContainsKey(session)) _bancoModeracao[session] = new StatusModeracao();
             var status = _bancoModeracao[session];
 
-            if (status.BloqueioDefinitivo)
-                return RespostaSimples("🚫 Acesso Negado. Você foi bloqueado.");
-
+            if (status.BloqueioDefinitivo) return RespostaSimples("🚫 Acesso Negado. Você foi bloqueado.");
             if (status.BloqueadoAte.HasValue && status.BloqueadoAte > DateTime.Now)
             {
                 var rest = Math.Ceiling((status.BloqueadoAte.Value - DateTime.Now).TotalMinutes);
                 return RespostaSimples($"⏳ Suspenso por {rest} minuto(s).");
             }
 
-            bool eInadequado = Blacklist.Any(p => textoUsuario.Contains(p))
-                               || intentName == "Default Fallback Intent"
-                               || intentName == "mensagens_inadequadas";
+            bool eInadequado = Blacklist.Any(p => textoUsuario.Contains(p)) || intentName == "mensagens_inadequadas";
+            if (eInadequado) return AplicarPunicao(status, session);
 
-            if (eInadequado)
-                return AplicarPunicao(status, session);
-
-            if (textoUsuario == "0")
+            // --- Saída Global ---
+            if (textoUsuario == "0" || textoUsuario == "sair")
                 return ResetarContextos(session);
 
-            // ===== QUIZ =====
-            if (intentName == "exercicio")
+            // --- ESTADOS DE CONVERSA (Contextos) ---
+            bool emQuiz = EstaEmContexto(queryResult, "fazendo_quiz");
+            bool emQuestionario = EstaEmContexto(queryResult, "fazendo_questionario");
+            bool aguardandoCurso = EstaEmContexto(queryResult, "aguardando_escolha_curso");
+
+            // 1. Processar Quiz ou Questionário
+            if (emQuiz) return ProcessarAtividade(payload, session, textoUsuario, ListaQuiz, "fazendo_quiz", true);
+            if (emQuestionario) return ProcessarAtividade(payload, session, textoUsuario, ListaQuestionario, "fazendo_questionario", false);
+
+            // 2. Processar Submenu de Conteúdo (Se o usuário apertou 1 antes)
+            if (aguardandoCurso)
+            {
+                string respostaConteudo = "";
+                if (textoUsuario == "1" || intentName == "OQueEJavascript") 
+                    respostaConteudo = "📚 Acesse a introdução ao JavaScript no link: [link introdução]";
+                else if (textoUsuario == "2" || intentName == "ConceitosFundamentais") 
+                    respostaConteudo = "📚 Acesse os Conceitos Fundamentais no link: [link conceitos]";
+                else if (textoUsuario == "3" || intentName == "Funcoes") 
+                    respostaConteudo = "📚 Acesse o material sobre Funções no link: [link funções]";
+                else 
+                    return RespostaSimples("Opção inválida. Escolha 1, 2 ou 3 para os conteúdos, ou digite 0 para voltar.");
+
+                // Devolve a matéria e exibe o menu principal de volta
+                return new
+                {
+                    fulfillmentMessages = new[] { new { text = new { text = new[] { $"{respostaConteudo}\n\n{TextoMenu}" } } } },
+                    outputContexts = new[] {
+                        new { name = $"{session}/contexts/aguardando_escolha_curso", lifespanCount = 0, parameters = new {} },
+                        new { name = $"{session}/contexts/esperando_menu_principal", lifespanCount = 5, parameters = new {} }
+                    }
+                };
+            }
+
+            // 3. Menu Principal (Se não está em nenhuma das atividades acima)
+            if (intentName == "Default Welcome Intent" || textoUsuario == "menu" || textoUsuario == "oi" || textoUsuario == "ola")
+                return RespostaComMenu(session, "Olá! " + TextoMenu);
+
+            // CORREÇÃO: A linha abaixo estava faltando. Leva o usuário para o Submenu de Estudo e ativa o contexto.
+            if (intentName == "ConteudoExplicativo" || textoUsuario == "1")
+            {
+                string subMenu = "O que você quer aprender? :\n1 - O que é Javascript\n2 - Conceitos fundamentais\n3 - Funções";
+                return new
+                {
+                    fulfillmentMessages = new[] { new { text = new { text = new[] { subMenu } } } },
+                    outputContexts = new[] {
+                        new { name = $"{session}/contexts/esperando_menu_principal", lifespanCount = 0, parameters = new {} },
+                        new { name = $"{session}/contexts/aguardando_escolha_curso", lifespanCount = 5, parameters = new {} }
+                    }
+                };
+            }
+
+            if (intentName == "exercicio" || textoUsuario == "2")
                 return IniciarAtividade(session, ListaQuiz, "fazendo_quiz", "🚀 QUIZ JS");
 
-            if (intentName == "Responder_Exercicio")
-                return ProcessarAtividade(payload, session, textoUsuario, ListaQuiz, "fazendo_quiz", true);
-
-            // ===== QUESTIONÁRIO =====
-            if (intentName == "questionario")
+            if (intentName == "questionario" || textoUsuario == "3")
                 return IniciarAtividade(session, ListaQuestionario, "fazendo_questionario", "📝 QUESTIONÁRIO");
 
-            if (intentName == "responder_questionario")
-                return ProcessarAtividade(payload, session, textoUsuario, ListaQuestionario, "fazendo_questionario", false);
-
-            return RespostaSimples("Digite uma opção válida.");
+            // Fallback (Se digitar algo fora das opções do menu)
+            return RespostaComMenu(session, $"Não entendi. {TextoMenu}");
         }
 
         // ================== FLUXO ATIVIDADES ==================
@@ -93,7 +144,7 @@ namespace ChatbotEducacionalApi.UseCases
         private object IniciarAtividade(string session, List<PerguntaQuiz> lista, string contexto, string titulo)
         {
             var p = lista.First();
-            return MontarResposta(session, $"{titulo} (1/10)\n\n{p.Texto}\n{p.Opcoes}", 1, 0, contexto);
+            return MontarResposta(session, $"{titulo} (1/{lista.Count})\n\n{p.Texto}\n{p.Opcoes}", 1, 0, contexto);
         }
 
         private object ProcessarAtividade(JsonElement payload, string session, string resposta, List<PerguntaQuiz> lista, string contexto, bool comFeed)
@@ -105,16 +156,21 @@ namespace ChatbotEducacionalApi.UseCases
             {
                 foreach (var c in contexts.EnumerateArray())
                 {
-                    if (c.GetProperty("name").GetString().Contains(contexto))
+                    var name = c.TryGetProperty("name", out JsonElement n) ? n.GetString() : "";
+                    if (name.Contains(contexto))
                     {
-                        var paras = c.GetProperty("parameters");
-                        idAtual = ExtrairInt(paras, "id_pergunta", 1);
-                        pontos = ExtrairInt(paras, "pontuacao_atual", 0);
+                        if (c.TryGetProperty("parameters", out JsonElement paras))
+                        {
+                            idAtual = ExtrairInt(paras, "id_pergunta", 1);
+                            pontos = ExtrairInt(paras, "pontuacao_atual", 0);
+                        }
                     }
                 }
             }
 
-            var pAtual = lista.First(p => p.Id == idAtual);
+            var pAtual = lista.FirstOrDefault(p => p.Id == idAtual);
+            if (pAtual == null) return ResetarContextos(session);
+
             bool acertou = (resposta == pAtual.Correta);
             if (acertou) pontos += comFeed ? 10 : 1;
 
@@ -124,54 +180,77 @@ namespace ChatbotEducacionalApi.UseCases
             {
                 string msg = "";
                 if (comFeed)
-                    msg = acertou
-                        ? $"✅ Correto! {pAtual.Feedback}\n\n"
-                        : $"❌ Errado! Era {pAtual.Correta}. {pAtual.Feedback}\n\n";
+                    msg = acertou ? $"✅ Correto! {pAtual.Feedback}\n\n" : $"❌ Errado! Era {pAtual.Correta}. {pAtual.Feedback}\n\n";
 
-                msg += $"Próxima ({proxima.Id}/10):\n{proxima.Texto}\n{proxima.Opcoes}";
-
+                msg += $"Próxima ({proxima.Id}/{lista.Count}):\n{proxima.Texto}\n{proxima.Opcoes}";
                 return MontarResposta(session, msg, proxima.Id, pontos, contexto);
             }
 
             string fim = comFeed
-                ? $"🏆 QUIZ CONCLUÍDO! Nota Final: {pontos}/100"
-                : $"📊 QUESTIONÁRIO FINALIZADO!\n✅ Acertos: {pontos}\n❌ Erros: {10 - pontos}";
+                ? $"🏆 QUIZ CONCLUÍDO! Nota Final: {pontos}/100\n\n{TextoMenu}"
+                : $"📊 QUESTIONÁRIO FINALIZADO!\n✅ Acertos: {pontos}\n❌ Erros: {lista.Count - pontos}\n\n{TextoMenu}";
 
-            return MontarResposta(session, fim, 0, 0, "menu", 2);
+            return new
+            {
+                fulfillmentMessages = new[] { new { text = new { text = new[] { fim } } } },
+                outputContexts = new[] { 
+                    new { name = $"{session}/contexts/{contexto}", lifespanCount = 0, parameters = new {} },
+                    new { name = $"{session}/contexts/esperando_menu_principal", lifespanCount = 5, parameters = new {} }
+                }
+            };
         }
 
-        // ================== MODERAÇÃO ==================
-
-        private object AplicarPunicao(StatusModeracao status, string session)
+        // ================== HELPERS E MODERAÇÃO ==================
+        
+        private bool EstaEmContexto(JsonElement queryResult, string nomeContexto)
         {
-            status.ContadorAvisos++;
-
-            if (status.ContadorAvisos == 2)
-                status.BloqueadoAte = DateTime.Now.AddMinutes(5);
-
-            if (status.ContadorAvisos >= 3)
-                status.BloqueioDefinitivo = true;
-
-            return RespostaSimples("⚠️ Linguagem inadequada detectada.");
+            if (queryResult.TryGetProperty("outputContexts", out JsonElement contexts))
+            {
+                foreach (var c in contexts.EnumerateArray())
+                {
+                    var name = c.TryGetProperty("name", out JsonElement n) ? n.GetString() : "";
+                    var lifespan = c.TryGetProperty("lifespanCount", out var lc) ? lc.GetInt32() : 0;
+                    if (name.Contains(nomeContexto) && lifespan > 0) return true;
+                }
+            }
+            return false;
         }
-
-        // ================== HELPERS ==================
 
         private object ResetarContextos(string session)
         {
             return new
             {
-                fulfillmentText = "🔄 Atividade encerrada.",
+                fulfillmentMessages = new[] { new { text = new { text = new[] { $"🔄 Atividade encerrada. Digite 'oi' paara me chamar novamente" } } } },
                 outputContexts = new[] {
-                    new { name = $"{session}/contexts/fazendo_quiz", lifespanCount = 0 },
-                    new { name = $"{session}/contexts/fazendo_questionario", lifespanCount = 0 }
-                },
-                endInteraction = true
+                    new { name = $"{session}/contexts/fazendo_quiz", lifespanCount = 0, parameters = new {} },
+                    new { name = $"{session}/contexts/fazendo_questionario", lifespanCount = 0, parameters = new {} },
+                    new { name = $"{session}/contexts/aguardando_escolha_curso", lifespanCount = 0, parameters = new {} },
+                    new { name = $"{session}/contexts/esperando_menu_principal", lifespanCount = 5, parameters = new {} }
+                }
+            };
+        }
+
+        private object RespostaComMenu(string session, string texto)
+        {
+            return new
+            {
+                fulfillmentMessages = new[] { new { text = new { text = new[] { texto } } } },
+                outputContexts = new[] {
+                    new { name = $"{session}/contexts/esperando_menu_principal", lifespanCount = 5, parameters = new {} }
+                }
             };
         }
 
         private object RespostaSimples(string texto)
-            => new { fulfillmentText = texto };
+            => new { fulfillmentMessages = new[] { new { text = new { text = new[] { texto } } } } };
+
+        private object AplicarPunicao(StatusModeracao status, string session)
+        {
+            status.ContadorAvisos++;
+            if (status.ContadorAvisos >= 2) status.BloqueadoAte = DateTime.Now.AddMinutes(5);
+            if (status.ContadorAvisos >= 3) status.BloqueioDefinitivo = true;
+            return RespostaSimples("⚠️ Linguagem inadequada detectada.");
+        }
 
         private int ExtrairInt(JsonElement el, string prop, int padrao)
         {
